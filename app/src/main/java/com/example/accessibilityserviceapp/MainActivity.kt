@@ -25,9 +25,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,27 +36,26 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.collectLatest
 
 class MainActivity : ComponentActivity() {
-
-    private val eventList = mutableStateListOf<String>()
-    private val appUsageData = mutableStateOf<Map<String, Triple<Long, Int, String>>>(emptyMap())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                MainScreen(eventList = eventList, appUsageData = appUsageData)
+                MainScreen()
             }
         }
     }
 }
 
 @Composable
-fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<String, Triple<Long, Int, String>>>) {
+fun MainScreen() {
     val context = LocalContext.current
+    val eventList = remember { mutableStateListOf<String>() }
+    val appUsageCHIPData = remember { mutableStateOf<Map<String, Triple<Long, Int, String>>>(emptyMap()) }
+    val appSessions = remember { mutableStateListOf<MyAccessibilityService.AppSession>() }
 
     // Collect events from the eventFlow
     LaunchedEffect(Unit) {
@@ -71,8 +70,16 @@ fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<St
     LaunchedEffect(Unit) {
         MyAccessibilityService.appUsageFlow.collectLatest { usageData ->
             usageData?.let {
-                appUsageData.value = it
+                appUsageCHIPData.value = it
             }
+        }
+    }
+
+    // Collect app session data from the appSessionFlow
+    LaunchedEffect(Unit) {
+        MyAccessibilityService.appSessionFlow.collectLatest { sessions ->
+            appSessions.clear()
+            appSessions.addAll(sessions)
         }
     }
 
@@ -106,13 +113,15 @@ fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<St
                     .weight(1f)
             ) {
                 items(eventList) { event ->
-                    val isClickedEvent = event.contains("Clicked")
+                    val isClickedEvent = event.contains("Clicked") || event.contains("Long Clicked")
                     Text(
                         text = event,
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(if (isClickedEvent) Color.LightGray else Color.Transparent)
-                            .padding(vertical = 4.dp, horizontal = 8.dp)
+                            .padding(vertical = 4.dp, horizontal = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = 14.sp
                     )
                 }
             }
@@ -124,11 +133,11 @@ fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<St
             fontWeight = FontWeight.Bold
         )
 
-        if (appUsageData.value.isEmpty()) {
+        if (appUsageCHIPData.value.isEmpty()) {
             Text(text = "No app usage recorded yet. Switch between apps to track usage.")
         } else {
             // Sort by time spent (descending) to show the most used app at the top
-            val sortedAppUsage = appUsageData.value.entries.sortedByDescending { it.value.first }
+            val sortedAppUsage = appUsageCHIPData.value.entries.sortedByDescending { it.value.first }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -136,7 +145,7 @@ fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<St
             ) {
                 items(sortedAppUsage) { entry ->
                     val packageName = entry.key
-                    val (timeSpentMs, _, appName) = entry.value
+                    val (timeSpentMs, openCount, appName) = entry.value
 
                     // Format time spent as "X hr Y mins" or "X minutes"
                     val timeSpentSeconds = timeSpentMs / 1000
@@ -183,7 +192,7 @@ fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<St
                             )
                         }
 
-                        // App Name and Time
+                        // App Name, Time, and Open Count
                         Column {
                             Text(
                                 text = appName,
@@ -193,11 +202,111 @@ fun MainScreen(eventList: MutableList<String>, appUsageData: MutableState<Map<St
                                 color = Color.Black
                             )
                             Text(
-                                text = timeText,
+                                text = "Time: $timeText",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontSize = 14.sp,
                                 color = Color.Gray
                             )
+                            Text(
+                                text = "Opened: $openCount times",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontSize = 14.sp,
+                                color = Color.Gray
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "App Session History",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        if (appSessions.isEmpty()) {
+            Text(text = "No app sessions recorded yet. Switch between apps to track sessions.")
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                items(appSessions.reversed()) { session ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Fetch app icon
+                        val iconBitmap = try {
+                            val packageManager = context.packageManager
+                            val appInfo = packageManager.getApplicationInfo(session.packageName, 0)
+                            val drawable = packageManager.getApplicationIcon(appInfo)
+                            drawable.toBitmap(48, 48) // Convert to Bitmap with 48dp size
+                        } catch (e: PackageManager.NameNotFoundException) {
+                            null
+                        }
+
+                        // App Icon
+                        if (iconBitmap != null) {
+                            Image(
+                                bitmap = iconBitmap.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .padding(end = 16.dp)
+                            )
+                        } else {
+                            // Placeholder if icon not found
+                            Text(
+                                text = "?", // Fallback placeholder
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .padding(end = 16.dp),
+                                fontSize = 24.sp
+                            )
+                        }
+
+                        // Session Details
+                        Column {
+                            Text(
+                                text = session.appName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color.Black
+                            )
+                            Text(
+                                text = "Opened: ${session.openedTime}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontSize = 14.sp,
+                                color = Color.Gray
+                            )
+                            Text(
+                                text = "Closed: ${session.closingTime ?: "Still Open"}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontSize = 14.sp,
+                                color = Color.Gray
+                            )
+                            if (session.closingTime != null) {
+                                // Format session duration as "X hr Y mins" or "X minutes"
+                                val sessionSeconds = session.sessionDurationMs / 1000
+                                val hours = sessionSeconds / 3600
+                                val minutes = (sessionSeconds % 3600) / 60
+                                val durationText = when {
+                                    hours > 0 -> "$hours hr $minutes mins"
+                                    else -> "$minutes minutes"
+                                }
+                                Text(
+                                    text = "Duration: $durationText",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontSize = 14.sp,
+                                    color = Color.Gray
+                                )
+                            }
                         }
                     }
                 }
